@@ -68,8 +68,15 @@ static inline void wr8(uintptr_t a, uint8_t v) { *(volatile uint8_t *)a = v; }
 extern char secondary_entry[];
 
 static const char *stage;	/* set at runtime: no absolute pointers in data */
-static volatile uint64_t sec_mpidr[NR_CPUS];
-static volatile uint64_t sec_probe[4];	/* CPU1 redistributor write test */
+/*
+ * Written by the secondaries with their MMU off, i.e. straight to DRAM, and
+ * read by the primary with caches on: keep it on cache lines of its own so
+ * no primary store dirties them (see test_smp).
+ */
+static volatile struct {
+	uint64_t mpidr[NR_CPUS];
+	uint64_t probe[4];	/* CPU1 redistributor write test */
+} __attribute__((aligned(64))) sec;
 static volatile uint32_t irq_count, irq_other, irq_last;
 static volatile int irq_src;
 
@@ -185,20 +192,34 @@ static uintptr_t find_gicr(void);
 
 void secondary_main(uint64_t idx)
 {
-	sec_mpidr[idx] = rsr("mpidr_el1") | (1ULL << 63);
+	sec.mpidr[idx] = rsr("mpidr_el1") | (1ULL << 63);
 	if (idx == 1) {
 		uintptr_t r = find_gicr();
 		if (r) {
-			sec_probe[0] = rd32(r + GICR_IGROUPR0);
+			sec.probe[0] = rd32(r + GICR_IGROUPR0);
 			wr32(r + GICR_IGROUPR0, 0xffffffff);
-			sec_probe[1] = rd32(r + GICR_IGROUPR0);
+			sec.probe[1] = rd32(r + GICR_IGROUPR0);
 			wr32(r + GICR_IPRIORITYR + 16, 0xa0a0a0a0);
-			sec_probe[2] = rd32(r + GICR_IPRIORITYR + 16);
+			sec.probe[2] = rd32(r + GICR_IPRIORITYR + 16);
 		}
-		sec_probe[3] = r ? 1 : 0xdead;
+		sec.probe[3] = r ? 1 : 0xdead;
 	}
 	__asm__ volatile("dsb sy" ::: "memory");
 	smc(PSCI_CPU_OFF, 0, 0, 0);
+}
+
+/*
+ * Clean+invalidate [p, p + n) to the point of coherency. With stage 2 on
+ * (Qualcomm's hypervisor) EL1 "dc ivac" is upgraded to this anyway, so the
+ * lines must not be dirty when it runs.
+ */
+static void dc_civac(const volatile void *p, uint64_t n)
+{
+	uint64_t line = 4UL << ((rsr("ctr_el0") >> 16) & 0xf);
+
+	for (uintptr_t a = (uintptr_t)p & ~(line - 1); a < (uintptr_t)p + n; a += line)
+		__asm__ volatile("dc civac, %0" : : "r"(a) : "memory");
+	__asm__ volatile("dsb sy" ::: "memory");
 }
 
 static void __attribute__((unused)) test_smp(void)
@@ -207,9 +228,13 @@ static void __attribute__((unused)) test_smp(void)
 	uint64_t self = rsr("mpidr_el1") & 0xffffff;
 	int64_t ret[NR_CPUS];
 
+	/* No cached copy of the mailbox while the secondaries write DRAM... */
+	dc_civac(&sec, sizeof(sec));
 	for (int i = 1; i < NR_CPUS; i++)
 		ret[i] = smc(PSCI_CPU_ON, (uint64_t)i << 8, (uintptr_t)secondary_entry, i);
 	delay_ms(500);
+	/* ...and drop lines speculatively refilled meanwhile (clean, so no write-back). */
+	dc_civac(&sec, sizeof(sec));
 	for (int i = 1; i < NR_CPUS; i++) {
 		char label[] = "CPU0";
 		label[3] = '0' + i;
@@ -217,7 +242,7 @@ static void __attribute__((unused)) test_smp(void)
 			con_str(label, "is boot cpu");
 		else
 			con_hex2(label, "ret=", (uint32_t)ret[i], "mpidr=",
-				 (uint32_t)sec_mpidr[i] | (sec_mpidr[i] ? 0 : 0xdead0000));
+				 (uint32_t)sec.mpidr[i] | (sec.mpidr[i] ? 0 : 0xdead0000));
 	}
 }
 

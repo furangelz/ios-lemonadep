@@ -1,0 +1,237 @@
+--- a/osfmk/arm64/genassym.c
++++ b/osfmk/arm64/genassym.c
+@@ -299,6 +299,9 @@
+ 	DECLARE("BA_MEM_SIZE", offsetof(struct boot_args, memSize));
+ 	DECLARE("BA_TOP_OF_KERNEL_DATA", offsetof(struct boot_args, topOfKernelData));
+ 	DECLARE("BA_BOOT_FLAGS", offsetof(struct boot_args, bootFlags));
++	DECLARE("BA_VIDEO_BASE", offsetof(struct boot_args, Video.v_baseAddr));
++	DECLARE("BA_VIDEO_ROW_BYTES", offsetof(struct boot_args, Video.v_rowBytes));
++	DECLARE("BA_VIDEO_HEIGHT", offsetof(struct boot_args, Video.v_height));
+ 
+ 	DECLARE("SR_RESTORE_TCR_EL1", offsetof(struct sysreg_restore, tcr_el1));
+ 
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -514,11 +514,19 @@
+ 	mov		x21, #0
+ 
+ #if defined(SWEET)
+-	/* Stage 0: white 64x32 band, no stack or page tables needed. */
+-	MOV64	x0, (0x9c000000 + 2368 * 4320)
++	/*
++	 * Stage 0: white 64x32 band at the bottom left of boot_args->Video,
++	 * no stack or page tables needed. No video (base 0): no early console.
++	 */
++	ldr		x0, [x20, BA_VIDEO_BASE]
++	cbz		x0, Lsweet_mark_done
++	ldr		x4, [x20, BA_VIDEO_ROW_BYTES]
++	ldr		x2, [x20, BA_VIDEO_HEIGHT]
++	subs	x2, x2, #32
++	b.lo	Lsweet_mark_done
++	madd	x0, x2, x4, x0
+ 	mov		w1, #-1
+ 	mov		x2, #32
+-	mov		x4, #4320
+ Lsweet_mark_row:
+ 	mov		x3, #64
+ 	mov		x5, x0
+@@ -530,6 +538,7 @@
+ 	subs	x2, x2, #1
+ 	b.ne	Lsweet_mark_row
+ 	dsb		sy
++Lsweet_mark_done:
+ #endif
+ 
+ 	// Set low reset vector before attempting any loads
+@@ -680,19 +689,25 @@
+ 
+ #if defined(SWEET)
+ 	/*
+-	 * Splash framebuffer: one 32MB Normal-NC block in the EXISTING V=P
+-	 * L2 table. Both framebuffer and RAM use L1 index 0; another call to
+-	 * create_bootstrap_mapping would replace the RAM L2 table.
+-	 * SWEET uses 16K pages and all bring-up RAM is below 4GB, so the first
+-	 * V=P L2 page is bootstrap_pagetables + 2*PGBYTES.
+-	 */
+-	MOV64	x10, 0x9c000000
++	 * Splash framebuffer (boot_args->Video): the 32MB block holding its
++	 * base, Normal-NC, in the EXISTING V=P L2 table. Both framebuffer and
++	 * RAM use L1 index 0; another call to create_bootstrap_mapping would
++	 * replace the RAM L2 table. SWEET uses 16K pages (one L1 entry covers
++	 * 64GB) and all bring-up RAM is below 64GB, so the first V=P L2 page is
++	 * bootstrap_pagetables + 2*PGBYTES. sweet_early_init() limits the early
++	 * console to this block.
++	 */
++	ldr		x10, [x20, BA_VIDEO_BASE]
++	cbz		x10, Lsweet_fb_unmapped
++	lsr		x10, x10, #(ARM_TT_L2_SHIFT)
++	lsl		x10, x10, #(ARM_TT_L2_SHIFT)
+ 	MOV64	x11, (ARM_TTE_TYPE_BLOCK | ARM_TTE_VALID | ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) | ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITECOMB) | ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX)
+ 	orr		x11, x11, x10
+ 	and		x12, x10, #(ARM_TT_L2_INDEX_MASK)
+ 	lsr		x12, x12, #(ARM_TT_L2_SHIFT)
+ 	add		x13, x25, #(2 * PGBYTES)
+ 	str		x11, [x13, x12, lsl #TTE_SHIFT]
++Lsweet_fb_unmapped:
+ #endif
+ 
+ 	/* Ensure TTEs are visible */
+--- a/osfmk/arm64/sweet_early.h
++++ b/osfmk/arm64/sweet_early.h
+@@ -7,6 +7,10 @@
+ #include <stdint.h>
+ 
+ #if defined(SWEET)
++/* boot_args->Video; a zero base disables the early console. */
++void sweet_early_init(uint64_t base, uint64_t width, uint64_t height, uint64_t row_bytes);
++/* Physical base of the early framebuffer, 0 when disabled. */
++uint64_t sweet_early_fb_pa(void);
+ void sweet_early_mark(unsigned int stage, const char *label);
+ void sweet_early_putc(char c);
+ void sweet_early_panic(const char *fmt, va_list *args);
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -1,7 +1,8 @@
+ /*
+- * Redmi Note 10 Pro bootstrap console. No allocation, locks, ADT parsing or
+- * per-CPU state: panic() can reach this before a current thread exists.
+- * start.s maps the splash framebuffer VA=PA as Normal Non-Cacheable memory.
++ * SWEET bootstrap console (Redmi Note 10 Pro, OnePlus 9 Pro). No allocation,
++ * locks, ADT parsing or per-CPU state: panic() can reach this before a
++ * current thread exists. The framebuffer is boot_args->Video; start.s maps
++ * the 32MB block holding its base VA=PA as Normal Non-Cacheable memory.
+  * arm_vm_init installs a reserved kernel VA alias before removing TTBR0;
+  * retain this console until the normal framebuffer serial console is ready.
+  */
+@@ -9,13 +10,17 @@
+ 
+ #if defined(SWEET)
+ #include <stdint.h>
++#include <arm64/proc_reg.h>
+ #include <kern/misc_protos.h>
+ 
+-static volatile uint32_t *early_fb = (volatile uint32_t *)(uintptr_t)0x9c000000;
++/* Set by sweet_early_init(); zero (nothing drawn) until then. */
++static volatile uint32_t *early_fb;
++static uint64_t early_fb_pa;
++static unsigned int early_width, early_height, early_stride;
+ #define EARLY_FB early_fb
+-#define EARLY_WIDTH 1080u
+-#define EARLY_HEIGHT 2400u
+-#define EARLY_STRIDE (4320u / 4)
++#define EARLY_WIDTH early_width
++#define EARLY_HEIGHT early_height
++#define EARLY_STRIDE early_stride
+ #define EARLY_SCALE 2u
+ #define EARLY_CELL_W (8u * EARLY_SCALE)
+ #define EARLY_CELL_H (16u * EARLY_SCALE)
+@@ -28,6 +33,32 @@
+ static unsigned int early_row, early_col;
+ static unsigned int early_started, early_disabled, early_panicking;
+ 
++void
++sweet_early_init(uint64_t base, uint64_t width, uint64_t height, uint64_t row_bytes)
++{
++	/* Only the 32MB block holding the base is mapped (start.s, arm_vm_init). */
++	uint64_t rows = (ARM_TT_L2_SIZE - (base & ARM_TT_L2_OFFMASK)) / (row_bytes ? row_bytes : 1);
++
++	if (base == 0 || row_bytes < 4 || width < EARLY_CELL_W || height < 32u + EARLY_CELL_H) {
++		early_disabled = 1;
++		return;
++	}
++	early_stride = (unsigned int)(row_bytes / 4);
++	early_width = (unsigned int)(width < early_stride ? width : early_stride);
++	early_height = (unsigned int)(height < rows ? height : rows);
++	early_fb_pa = base;
++	early_fb = (volatile uint32_t *)(uintptr_t)base;	/* VA=PA until arm_vm_init */
++	if (early_height < 32u + EARLY_CELL_H) {
++		early_disabled = 1;
++	}
++}
++
++uint64_t
++sweet_early_fb_pa(void)
++{
++	return early_disabled ? 0 : early_fb_pa;
++}
++
+ static void
+ sweet_early_clear_row(void)
+ {
+@@ -42,7 +73,7 @@
+ void
+ sweet_early_putc(char c)
+ {
+-	if (early_disabled) {
++	if (early_disabled || !early_fb) {
+ 		return;
+ 	}
+ 	if (!early_started) {
+@@ -89,12 +120,12 @@
+ void
+ sweet_early_mark(unsigned int stage, const char *label)
+ {
+-	if (early_disabled || stage > 20) {
++	if (early_disabled || !early_fb || stage > 20) {
+ 		return;
+ 	}
+ 	uint32_t color = 0xff00ff00u | ((stage & 7u) * 32u << 16);
+ 	for (unsigned int y = EARLY_HEIGHT - 32; y < EARLY_HEIGHT; y++) {
+-		for (unsigned int x = stage * 48; x < (stage + 1) * 48; x++) {
++		for (unsigned int x = stage * 48; x < (stage + 1) * 48 && x < EARLY_WIDTH; x++) {
+ 			EARLY_FB[y * EARLY_STRIDE + x] = color;
+ 		}
+ 	}
+@@ -128,6 +159,9 @@
+ void
+ sweet_early_relocate(uint64_t base)
+ {
++	if (early_disabled) {
++		return;
++	}
+ 	sweet_early_mark(8, "leaving bootstrap TTBR0");
+ 	early_fb = (volatile uint32_t *)(uintptr_t)base;
+ 	__asm__ volatile("dsb sy" ::: "memory");
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -347,6 +347,10 @@
+ 	DTEntry chosen = NULL;
+ 	unsigned int dt_entry_size = 0;
+ 
++#if defined(SWEET)
++	sweet_early_init(args->Video.v_baseAddr, args->Video.v_width,
++	    args->Video.v_height, args->Video.v_rowBytes);
++#endif
+ 	sweet_early_mark(1, "arm_init entered (MMU on)");
+ 
+ 	arm_setup_pre_sign();
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -1837,13 +1837,17 @@
+ sweet_early_map_final(void)
+ {
+ 	const vm_map_address_t va = SWEET_EARLY_FB_VA;
++	const uint64_t pa = sweet_early_fb_pa();
++	if (pa == 0) {
++		return;
++	}
+ 	assert(va + ARM_TT_L2_SIZE <= gVirtBase);
+ 	tt_entry_t l1 = cpu_tte[(va & ARM_TT_L1_INDEX_MASK) >> ARM_TT_L1_SHIFT];
+ 	assert((l1 & (ARM_TTE_VALID | ARM_TTE_TYPE_MASK)) == (ARM_TTE_VALID | ARM_TTE_TYPE_TABLE));
+ 	tt_entry_t *l2 = (tt_entry_t *)phystokv(l1 & ARM_TTE_TABLE_MASK);
+ 	tt_entry_t *slot = &l2[(va & ARM_TT_L2_INDEX_MASK) >> ARM_TT_L2_SHIFT];
+ 	assert(*slot == ARM_TTE_EMPTY);
+-	*slot = 0x9c000000ULL | ARM_TTE_VALID | ARM_TTE_TYPE_BLOCK |
++	*slot = (pa & ~(uint64_t)ARM_TT_L2_OFFMASK) | ARM_TTE_VALID | ARM_TTE_TYPE_BLOCK |
+ 	    ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) |
+ 	    ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITECOMB) |
+ 	    ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX;
+@@ -2190,7 +2194,7 @@
+ 
+ #if defined(SWEET)
+ 	/* The final TTBR1 is live; leave the outgoing VA=PA framebuffer alias. */
+-	sweet_early_relocate(SWEET_EARLY_FB_VA);
++	sweet_early_relocate(SWEET_EARLY_FB_VA + (sweet_early_fb_pa() & ARM_TT_L2_OFFMASK));
+ #endif
+ 	set_mmu_ttb(invalid_ttep & TTBR_BADDR_MASK);
+ 

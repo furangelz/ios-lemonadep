@@ -12,7 +12,11 @@
 #include "loader.h"
 #include "ufs.h"
 
-#define IMEM_RESTART_REASON	0x146aa65cUL	/* qcom,msm-imem restart_reason@65c */
+#if defined(TARGET_LEMONADEP)
+#define IMEM_RESTART_REASON	0x146bf65cUL	/* SM8350: qcom,msm-imem@146bf000 restart_reason@65c */
+#else
+#define IMEM_RESTART_REASON	0x146aa65cUL	/* SM7150: qcom,msm-imem restart_reason@65c */
+#endif
 #define RESTART_BOOTLOADER	0x77665500U
 #define PSHOLD			0x0c264000UL
 
@@ -30,8 +34,13 @@
 #define GICR_ISPENDR0		(GICR_SGI + 0x200)
 #define GICR_ISACTIVER0		(GICR_SGI + 0x300)
 #define GICR_ICFGR1		(GICR_SGI + 0xc04)
+#if defined(TARGET_LEMONADEP)
+#define VTIMER_INTID		27	/* Standard ARM virtual timer PPI */
+#define PTIMER_INTID		30	/* Standard ARM physical timer PPI */
+#else
 #define VTIMER_INTID		19	/* DT: <GIC_PPI 3 ...>, not the usual 27 */
 #define PTIMER_INTID		18	/* DT: <GIC_PPI 2 ...> */
+#endif
 #define SGI_INTID		1
 
 #define PSCI_VERSION		0x84000000UL
@@ -101,15 +110,20 @@ static void delay_ms(unsigned ms)
 		;
 }
 
-static void __attribute__((noreturn)) reset(unsigned after_s)
+static void __attribute__((noreturn, unused)) reset(unsigned after_s)
 {
 	con_skip();
 	con_str("RESET", after_s > 20 ? "in 40s" : "in 20s");
 	delay_ms(after_s * 1000);
+#if defined(TARGET_LEMONADEP)
+	/* SM8350: PSCI SYSTEM_RESET resets cleanly via EL3 TrustZone */
+	smc(PSCI_SYSTEM_RESET, 0, 0, 0);
+#else
 	wr32(IMEM_RESTART_REASON, RESTART_BOOTLOADER);
 	__asm__ volatile("dsb sy" ::: "memory");
 	smc(PSCI_SYSTEM_RESET, 0, 0, 0);
 	wr32(PSHOLD, 0);
+#endif
 	for (;;)
 		__asm__ volatile("wfe");
 }
@@ -138,7 +152,7 @@ static void irq_handler(void)
 
 void exc_handler(uint64_t slot, uint64_t *regs)
 {
-	if (slot == 5) {	/* IRQ from current EL, SPx */
+	if (slot == 1 || slot == 5) {	/* IRQ from current EL, SP0 or SPx */
 		irq_handler();
 		return;
 	}
@@ -157,8 +171,12 @@ void exc_handler(uint64_t slot, uint64_t *regs)
 	con_hex("SPSR", rsr("spsr_el1"));
 	con_hex("X0", regs[0]);
 	con_hex("X1", regs[1]);
-	con_hex("X30", regs[29]);	/* stashed lr is just above the frame */
-	reset(40);
+	con_hex("X29", regs[30]);
+	con_hex("X30", regs[31]);
+	con_skip();
+	con_str("HALT", "hold Power+VolDown to restart");
+	for (;;)
+		__asm__ volatile("wfe");
 }
 
 /* ---- SMP ---- */
@@ -174,7 +192,7 @@ void secondary_main(uint64_t idx)
 			sec_probe[0] = rd32(r + GICR_IGROUPR0);
 			wr32(r + GICR_IGROUPR0, 0xffffffff);
 			sec_probe[1] = rd32(r + GICR_IGROUPR0);
-			wr8(r + GICR_IPRIORITYR + 19, 0xa0);
+			wr32(r + GICR_IPRIORITYR + 16, 0xa0a0a0a0);
 			sec_probe[2] = rd32(r + GICR_IPRIORITYR + 16);
 		}
 		sec_probe[3] = r ? 1 : 0xdead;
@@ -268,8 +286,10 @@ static void irq_window(const char *label, uintptr_t r, int src)
 			next += f / 100;
 		}
 	__asm__ volatile("msr daifset, #2" ::: "memory");
-	wsr("cntv_ctl_el0", 0);
-	wsr("cntp_ctl_el0", 0);
+	if (src == VTIMER_INTID)
+		wsr("cntv_ctl_el0", 0);
+	else if (src == PTIMER_INTID)
+		wsr("cntp_ctl_el0", 0);
 	isb();
 
 	con_hex2(label, "irqs=", irq_count, "other=", irq_other);
@@ -317,9 +337,10 @@ static void test_gic(void)
 	wr32(r + GICR_IGROUPR0, 0xffffffff);	/* NS view: secure bits are WI */
 	uint32_t en_before = rd32(r + GICR_ISENABLER0);
 	uint32_t pri_before = rd32(r + GICR_IPRIORITYR + 16);	/* INTIDs 16..19 */
-	for (int id = 0; id < 32; id++)
-		wr8(r + GICR_IPRIORITYR + id, 0xa0);
-	wr32(r + GICR_ISENABLER0, (1U << VTIMER_INTID) | (1U << PTIMER_INTID) | (1U << SGI_INTID));
+	/* Non-secure PPI priorities: INTIDs 16..31 (words 4..7). Words 0..3 (SGIs) are owned by TrustZone */
+	for (int i = 4; i < 8; i++)
+		wr32(r + GICR_IPRIORITYR + (i * 4), 0xa0a0a0a0);
+	wr32(r + GICR_ISENABLER0, (1U << VTIMER_INTID) | (1U << SGI_INTID));
 	con_hex2("ENABLE", "was=", en_before, "now=", rd32(r + GICR_ISENABLER0));
 	(void)grp;
 	(void)pri_before;
@@ -387,10 +408,9 @@ void shim_main(uint64_t dtb)
 	stage = "ufs";
 	test_ufs();
 	con_skip();
-	/* Keep the probe results on screen (later tests clear it); reset after 3 min. */
-	con_str("UFS", "probe done, reset in ~3 min");
-	delay_ms(180000);
-	reset(20);
+	/* Let UFS probe results stay on screen for 4s, then continue to MMU/SMP/GIC tests. */
+	con_str("UFS", "probe done, running MMU/SMP/GIC...");
+	delay_ms(4000);
 
 	stage = "fill off";
 	uint64_t fill_off = ticks_fill(RED);
@@ -428,8 +448,14 @@ void shim_main(uint64_t dtb)
 	stage = "psci";
 	con_hex2("PSCI", "ver=", smc(PSCI_VERSION, 0, 0, 0), "smccc=", smc(SMCCC_VERSION, 0, 0, 0));
 	con_skip();
+	test_smp();
+	con_skip();
 	test_gic();
 
 	stage = "done";
-	reset(40);
+	con_skip();
+	con_str("DONE", "all tests passed!");
+	con_str("HALT", "hold Power+VolDown to restart");
+	for (;;)
+		__asm__ volatile("wfe");
 }

@@ -2,6 +2,31 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> UPDATE 2026-10-21: OnePlus 9 Pro (lemonadep / SM8350) Port Bring-Up <<<
+
+**STATE at 2026-10-21 (afternoon):**
+- **Hardware Milestones Verified on Physical Device (photo confirmed):**
+  - Framebuffer `0xe4d00000` (1440×3216, stride 5760) renders full-color diagnostics on device display.
+  - UFS 3.1 controller (`0x01d84000`) probed LUN0 and parsed GPT successfully.
+  - 16KB MMU page tables enabled, memory benchmarked, and identity mappings validated.
+  - PSCI & SMCCC operational; 8-core SMP probe succeeded across all cores.
+  - GICv3 Distributor (`0x17a00000`) and Redistributor (`0x17a60000`) initialized.
+- **Diagnosed and Fixed Crash at `STAGE: gic vtimer` (`media_1792597268544.jpg`):**
+  - **Root Cause Identified:** The photo showed `PANIC SYNC`, `SLOT n=4`, `ELR=0x80081a9c`, `FAR=0`, `SPSR=0x600003c5` (DAIF masked, EL1h), `X1=0xcccccccccccccccc`.
+    Disassembly of `irq_window` revealed that the 300 ms interrupt window finished, IRQs were masked with `msr daifset, #2`, `cntv_ctl_el0` was cleared, and then instruction `0x1a9c` executed an unconditional write: `msr cntp_ctl_el0, x0`. On Snapdragon 888, Qualcomm EL3/hypervisor traps physical timer (`CNTP_*`) accesses from NS-EL1 (`CNTHCTL_EL2.EL1PCEN == 0`), causing a synchronous exception.
+  - **Vector Table & Interrupt Routing Hardened:**
+    - `shim/shim.c`: `irq_window` now only clears `cntp_ctl_el0` if `src == PTIMER_INTID`.
+    - `shim/shim.c`: `exc_handler` now routes interrupts from both `slot == 1` (SP0) and `slot == 5` (SPx).
+    - `shim/shim.c`: Fixed `regs[31]` for X30 and added X29 in panic dump.
+    - `shim/shim.c`: Enabled `(1U << SGI_INTID)` in `GICR_ISENABLER0` so SGI1 test after VTIMER delivers properly.
+    - `shim/start.S`: Initialized `sp_el0` to a dedicated stack for primary and secondary entry.
+- **Built & Packaged:** Updated `shim/out/shim-boot-lemonadep.img` with GKI header v3.
+- **Next concrete actions for the user/next agent:**
+  1. Boot the updated diagnostic shim: `fastboot boot shim/out/shim-boot-lemonadep.img`.
+  2. Confirm `DONE: all tests passed!` on physical screen.
+  3. Trigger GitHub Actions build for kernel 0082 (`xnu/patches/0082-lemonadep-hardware-support.patch`).
+  4. Package kernel 0082 + `shim/out/lemonadep.adt` into payload and boot test image on lemonadep.
+
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
 
 **STATE at end of 2026-10-18 (evening):**

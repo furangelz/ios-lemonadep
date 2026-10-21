@@ -74,7 +74,7 @@ def node(name, props=(), children=()):
     return n
 
 
-def build(seed=None, qemu=False, highmem=False):
+def build(seed=None, qemu=False, highmem=False, target='sweet'):
     """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py)."""
     phys_base, mem_size = (HIGH_PHYS_BASE, HIGH_MEM_SIZE) if highmem else (PHYS_BASE, MEM_SIZE)
     # Carve the panic log off the top so the kernel never allocates over it.
@@ -84,6 +84,17 @@ def build(seed=None, qemu=False, highmem=False):
     seed = seed if seed is not None else os.urandom(64)
     phandle = iter(range(1, 1000))
     ph = lambda: ('AAPL,phandle', u32(next(phandle)))
+
+    if target == 'lemonadep':
+        fb, fb_size = 0xe4d00000, 0x2300000
+        fb_w, fb_h, fb_stride = 1440, 3216, 1440 * 4
+        vtimer_intid = 27
+        soc_compat = cstr('oneplus,lemonadep') + cstr('xiaomi,sweet') + cstr('qcom,sm8350')
+    else:
+        fb, fb_size = FB, FB_SIZE
+        fb_w, fb_h, fb_stride = FB_W, FB_H, FB_STRIDE
+        vtimer_intid = VTIMER_INTID
+        soc_compat = cstr('xiaomi,sweet') + cstr('qcom,sm7150')
 
     chosen = node('chosen', [
         ph(),
@@ -129,16 +140,28 @@ def build(seed=None, qemu=False, highmem=False):
         # with CSR_ALLOW_UNRESTRICTED_FS (vm_unix.c shared region checks).
         node('asmb', [ph(), ('lp-sip0', u64(0x6f)), ('lp-sip1', u32(1))])])
 
-    # SWEET SMP: all eight cores in physical-core order (0-5 Cortex-A55,
-    # 6-7 Cortex-A76), one homogeneous cluster. The kernel defaults to one
-    # and uses cpus=N to select an initial prefix (N <= 8).
+    # SMP: all eight cores in physical-core order, one homogeneous cluster.
     # QEMU retains its original single-CPU tree: its MPIDRs differ from sweet.
     cpu_nodes = []
     for core in range(1 if qemu else 8):
+        if target == 'lemonadep':
+            if core < 4:
+                cpu_compat = cstr('arm,cortex-a55') + cstr('ARM,v8')
+                clock_freq = 1800000000
+            elif core < 7:
+                cpu_compat = cstr('arm,cortex-a78') + cstr('ARM,v8')
+                clock_freq = 2420000000
+            else:
+                cpu_compat = cstr('arm,cortex-x1') + cstr('ARM,v8')
+                clock_freq = 2840000000
+        else:
+            cpu_compat = cstr('qcom,kryo470') + cstr('ARM,v8')
+            clock_freq = 2304000000 if core >= 6 else 1804800000
+
         cpu_nodes.append(node(f'cpu{core}', [
             ph(),
             ('device_type', cstr('cpu')),
-            ('compatible', cstr('qcom,kryo470') + cstr('ARM,v8')),
+            ('compatible', cpu_compat),
             ('reg', u32(core << 8)),  # actual MPIDR Aff1:Aff0, NOT logical ID
             ('cpu-id', u32(core)),   # descriptive: XNU assigns IDs by DT order
             ('cluster-id', u32(0)),  # descriptive; see ml_parse_cpu_topology
@@ -149,7 +172,7 @@ def build(seed=None, qemu=False, highmem=False):
             ('l3-cache-id', u32(0)),     # shared L3
             ('state', cstr('running' if core == 0 else 'stopped')),
             ('timebase-frequency', u32(timebase)),
-            ('clock-frequency', u32(2304000000 if core >= 6 else 1804800000)),
+            ('clock-frequency', u32(clock_freq)),
             ('bus-frequency', u32(100000000)),
             ('memory-frequency', u32(1866000000)),
             ('peripheral-frequency', u32(timebase)),
@@ -162,7 +185,7 @@ def build(seed=None, qemu=False, highmem=False):
         ph(),
         ('compatible', cstr('arm,gic-v3')),
         ('interrupt-controller', b''),
-        ('virtual-timer-intid', u32(QEMU_VTIMER_INTID if qemu else VTIMER_INTID)),
+        ('virtual-timer-intid', u32(QEMU_VTIMER_INTID if qemu else vtimer_intid)),
         ('reg', u64(gicd - SOC_BASE, GICD_SIZE, gicr - SOC_BASE, GICR_SIZE)),
     ])
     arm_io = node('arm-io', [
@@ -191,10 +214,10 @@ def build(seed=None, qemu=False, highmem=False):
 
     fbcon = node('sweet-fbcon', [
         ph(),
-        ('reg', u64(FB, FB_SIZE)),
-        ('width', u32(FB_W)),
-        ('height', u32(FB_H)),
-        ('stride', u32(FB_STRIDE)),
+        ('reg', u64(fb, fb_size)),
+        ('width', u32(fb_w)),
+        ('height', u32(fb_h)),
+        ('stride', u32(fb_stride)),
     ])
 
     # bsd/dev/sweet_ufs.c: the UFS host ABL leaves running (absolute physical reg).
@@ -231,7 +254,7 @@ def build(seed=None, qemu=False, highmem=False):
     # (iPhone10,3). 'xiaomi,sweet' stays for SweetPlatformExpert matching.
     return node('device-tree', [
         ph(),
-        ('compatible', cstr('D22AP') + cstr('iPhone10,3') + cstr('xiaomi,sweet') + cstr('qcom,sm7150') + cstr('AppleARM')),
+        ('compatible', cstr('D22AP') + cstr('iPhone10,3') + soc_compat + cstr('AppleARM')),
         ('model', cstr('iPhone10,3')),
         ('target-type', cstr('D22')),
         ('target-sub-type', cstr('D22AP')),
@@ -242,9 +265,16 @@ def build(seed=None, qemu=False, highmem=False):
 
 
 if __name__ == '__main__':
-    root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv)
+    target = 'lemonadep' if ('--lemonadep' in sys.argv or '--target=lemonadep' in sys.argv) else 'sweet'
+    if '--target' in sys.argv:
+        t_idx = sys.argv.index('--target')
+        if t_idx + 1 < len(sys.argv):
+            target = sys.argv[t_idx + 1]
+    pos_args = [a for a in sys.argv[1:] if not a.startswith('--') and (sys.argv.index(a) == 0 or sys.argv[sys.argv.index(a) - 1] != '--target')]
+    out_path = pos_args[0] if pos_args else '/tmp/out.adt'
+    root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv, target=target)
     blob = adt.serialize(root)
-    open(sys.argv[1], 'wb').write(blob)
+    open(out_path, 'wb').write(blob)
     if '--dump' in sys.argv:
         adt.dump(adt.parse(blob)[0])
-    print(f'{sys.argv[1]}: {len(blob)} bytes', file=sys.stderr)
+    print(f'{out_path}: {len(blob)} bytes (target={target})', file=sys.stderr)

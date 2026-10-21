@@ -1,10 +1,17 @@
 #pragma once
 #include <stdint.h>
 
+#if defined(TARGET_LEMONADEP)
+#define FB_BASE		0xe4d00000UL	/* OnePlus 9 Pro cont_splash_region (lemonade_common.dtsi) */
+#define FB_W		1440
+#define FB_H		3216
+#define FB_STRIDE	(FB_W * 4)	/* a8r8g8b8, 5760 bytes */
+#else
 #define FB_BASE		0x9c000000UL	/* reserved-memory cont_splash_region */
 #define FB_W		1080
 #define FB_H		2400
 #define FB_STRIDE	(FB_W * 4)	/* a8r8g8b8, matches mainline simplefb */
+#endif
 
 #define RED	0xffff0000U
 #define BLUE	0xff0000a0U

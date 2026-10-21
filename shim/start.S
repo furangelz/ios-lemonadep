@@ -21,8 +21,9 @@ _head:
 _start:
 	msr	daifset, #0xf
 	mov	x19, x0			/* DTB pointer from ABL */
-	msr	spsel, #1
 	adr	x1, _stack_top
+	msr	sp_el0, x1
+	msr	spsel, #1
 	mov	sp, x1
 	adr	x1, vectors
 	msr	vbar_el1, x1
@@ -43,10 +44,11 @@ _start:
 	.globl secondary_entry
 secondary_entry:
 	msr	daifset, #0xf
-	msr	spsel, #1
 	adr	x1, _sec_stacks
 	add	x1, x1, x0, lsl #12
 	add	x1, x1, #0x1000
+	msr	sp_el0, x1
+	msr	spsel, #1
 	mov	sp, x1
 	adr	x1, vectors
 	msr	vbar_el1, x1

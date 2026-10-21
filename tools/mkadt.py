@@ -87,7 +87,7 @@ def build(seed=None, qemu=False, highmem=False, target='sweet'):
 
     if target == 'lemonadep':
         fb, fb_size = 0xe4d00000, 0x2300000
-        fb_w, fb_h, fb_stride = 1440, 3216, 1440 * 4
+        fb_w, fb_h, fb_stride = 1080, 2412, 1080 * 4
         vtimer_intid = 27
         soc_compat = cstr('oneplus,lemonadep') + cstr('xiaomi,sweet') + cstr('qcom,sm8350')
     else:

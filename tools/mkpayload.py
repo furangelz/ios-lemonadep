@@ -19,6 +19,11 @@ Payload layout (little endian, all offsets from payload start):
   0x040  u64   mem_size
   0x048  char  cmdline[608]
   0x2a8  seg[nsegs] { u64 vmaddr, vmsize, file_off(in payload), file_size }
+  end-16 char  "SWEETEND", u64 payload size (trailer)
+
+The trailer lets the shim find the payload when it is not at initrd-start:
+with boot header v3 (lemonadep) ABL loads the vendor_boot ramdisk first and
+this one right behind it, at any byte offset.
 
 --ramdisk appends IMAGE as one more segment right after the kernel and moves
 kernel_end past it, so the shim needs no changes: the image lands below the
@@ -187,6 +192,7 @@ def build(kernel_path, adt_path, cmdline, ramdisk_path=None):
     out[CMDLINE:CMDLINE + len(cl)] = cl
     for i, t in enumerate(seg_table):
         struct.pack_into('<4Q', out, SEG_TABLE + 32 * i, *t)
+    out += struct.pack('<8sQ', b'SWEETEND', len(out) + 16)
     info = dict(cputype=hex(m['cputype']), cpusub=m['cpusub'], fixups=nfix, virt_base=hex(virt_base),
                 entry=hex(m['entry']), kernel_end=hex(kernel_end), ramdisk=ramdisk, size=len(out),
                 segs=[(s['name'], hex(s['vmaddr']), hex(s['vmsize'])) for s in segs])

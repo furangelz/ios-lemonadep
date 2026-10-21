@@ -80,6 +80,17 @@ void con_hex(const char *label, uint64_t v)
 	con_str(label, buf);
 }
 
+void con_range(const char *label, uint64_t a, uint64_t b)
+{
+	char buf[17];
+	put_str(0, label, YELLOW);
+	fmt_hex(buf, a, 16);
+	int col = put_str(LABEL_COLS, buf, WHITE);
+	fmt_hex(buf, b, 16);
+	put_str(col + 1, buf, WHITE);
+	row++;
+}
+
 void con_hex2(const char *label, const char *a, uint32_t va, const char *b, uint32_t vb)
 {
 	char buf[9];

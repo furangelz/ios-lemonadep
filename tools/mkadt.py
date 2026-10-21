@@ -2,7 +2,8 @@
 """Build the minimal Apple Device Tree that the SWEET xnu needs to boot.
 
 Only what the early boot path actually reads (see NOTES.md); every MMIO
-address comes from the sweet live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem]
+address comes from the sweet live FDT. Usage:
+  mkadt.py OUT.adt [--dump] [--qemu] [--highmem] [--target sweet|lemonadep]
 """
 import hashlib, os, struct, sys
 
@@ -76,6 +77,9 @@ def node(name, props=(), children=()):
 
 def build(seed=None, qemu=False, highmem=False, target='sweet'):
     """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py)."""
+    # lemonadep: the low window holds the panel (0xe4d00000) and SM8350
+    # carve-outs; the shim loader still checks the high bank against the live FDT.
+    highmem = highmem or target == 'lemonadep'
     phys_base, mem_size = (HIGH_PHYS_BASE, HIGH_MEM_SIZE) if highmem else (PHYS_BASE, MEM_SIZE)
     # Carve the panic log off the top so the kernel never allocates over it.
     panic_base = phys_base + mem_size - PANIC_LOG_SIZE

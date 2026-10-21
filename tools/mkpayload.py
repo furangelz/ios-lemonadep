@@ -19,11 +19,13 @@ Payload layout (little endian, all offsets from payload start):
   0x040  u64   mem_size
   0x048  char  cmdline[608]
   0x2a8  seg[nsegs] { u64 vmaddr, vmsize, file_off(in payload), file_size }
+  end-32 u64   ram_base, ram_size   all RAM the kernel touches (dram + /pram)
   end-16 char  "SWEETEND", u64 payload size (trailer)
 
 The trailer lets the shim find the payload when it is not at initrd-start:
 with boot header v3 (lemonadep) ABL loads the vendor_boot ramdisk first and
-this one right behind it, at any byte offset.
+this one right behind it, at any byte offset. The shim checks the RAM window
+against the live FDT (/memory, /reserved-memory) before copying anything.
 
 --ramdisk appends IMAGE as one more segment right after the kernel and moves
 kernel_end past it, so the shim needs no changes: the image lands below the
@@ -145,6 +147,18 @@ def adt_dram(adt_blob):
             struct.unpack('<Q', chosen.prop('dram-size'))[0])
 
 
+def adt_ram_window(adt_blob):
+    """<base, size> covering the kernel's RAM and the /pram panic log region."""
+    base, size = adt_dram(adt_blob)
+    lo, hi = base, base + size
+    root, _ = adt.parse(adt_blob)
+    pram = next((c for c in root.children if c.name == 'pram'), None)
+    if pram is not None:
+        pbase, psize = struct.unpack('<2Q', pram.prop('reg'))
+        lo, hi = min(lo, pbase), max(hi, pbase + psize)
+    return lo, hi - lo
+
+
 def build(kernel_path, adt_path, cmdline, ramdisk_path=None):
     buf = bytearray(open(kernel_path, 'rb').read())
     m = parse_macho(buf)
@@ -192,8 +206,10 @@ def build(kernel_path, adt_path, cmdline, ramdisk_path=None):
     out[CMDLINE:CMDLINE + len(cl)] = cl
     for i, t in enumerate(seg_table):
         struct.pack_into('<4Q', out, SEG_TABLE + 32 * i, *t)
-    out += struct.pack('<8sQ', b'SWEETEND', len(out) + 16)
+    ram_base, ram_size = adt_ram_window(adt_blob)
+    out += struct.pack('<QQ8sQ', ram_base, ram_size, b'SWEETEND', len(out) + 32)
     info = dict(cputype=hex(m['cputype']), cpusub=m['cpusub'], fixups=nfix, virt_base=hex(virt_base),
+                ram=(hex(ram_base), hex(ram_size)),
                 entry=hex(m['entry']), kernel_end=hex(kernel_end), ramdisk=ramdisk, size=len(out),
                 segs=[(s['name'], hex(s['vmaddr']), hex(s['vmsize'])) for s in segs])
     return bytes(out), info

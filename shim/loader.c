@@ -87,23 +87,31 @@ static uint64_t rd_u64(uintptr_t a)
 	return v;
 }
 
+/* mkpayload.py's trailer, the last 32 bytes of the payload. */
+struct trailer {
+	uintptr_t start;		/* payload start (may be misaligned) */
+	uint64_t len;			/* payload size, trailer included */
+	uint64_t ram_base, ram_size;	/* all RAM the kernel touches: dram + /pram */
+};
+
 /*
  * Boot header v3 (lemonadep): ABL loads the vendor_boot ramdisk at
- * initrd-start and ours right behind it. Find the payload from its
- * "SWEETEND" trailer, searched backwards in case ABL padded the end.
+ * initrd-start and ours right behind it; with v2 (sweet) ours is the whole
+ * initrd. Either way the payload ends in a "SWEETEND" trailer, searched
+ * backwards in case ABL padded the end.
  */
-static uintptr_t find_payload(uintptr_t rd_start, uintptr_t rd_end)
+static int find_payload(uintptr_t rd_start, uintptr_t rd_end, struct trailer *tr)
 {
-	if (magic_ok((const char *)rd_start))
-		return rd_start;
-	for (uintptr_t t = rd_end - 16; t >= rd_start && t + 0x10000 >= rd_end; t--) {
+	for (uintptr_t t = rd_end - 16; t >= rd_start + 16 && t + 0x10000 >= rd_end; t--) {
 		if (!magic_eq((const char *)t, "SWEETEND"))
 			continue;
-		uint64_t len = rd_u64(t + 8);
-		if (len < 16 || len > t + 16 - rd_start)
+		tr->len = rd_u64(t + 8);
+		if (tr->len < 32 || tr->len > t + 16 - rd_start)
 			return 0;
-		uintptr_t start = t + 16 - len;
-		return magic_ok((const char *)start) ? start : 0;
+		tr->start = t + 16 - tr->len;
+		tr->ram_base = rd_u64(t - 16);
+		tr->ram_size = rd_u64(t - 8);
+		return magic_ok((const char *)tr->start);
 	}
 	return 0;
 }
@@ -142,7 +150,7 @@ static void __attribute__((noreturn)) refuse(const char *why)
 }
 
 struct ram_check {
-	uint64_t lo, hi;	/* kernel-managed RAM [lo, hi) */
+	uint64_t lo, hi;	/* RAM the kernel touches [lo, hi) */
 	int in_ddr, clashes;
 };
 
@@ -169,28 +177,30 @@ const char *loader_boot(uintptr_t dtb)
 		return "no initrd in /chosen";
 	con_hex2("INITRD", "lo=", rd_start, "hi=", rd_end);
 
-	uintptr_t start = find_payload(rd_start, rd_end);
-	if (!start)
+	struct trailer tr;
+	if (!find_payload(rd_start, rd_end, &tr))
 		return "no SWEETXNU payload";
-	if (start != rd_start) {
-		con_hex2("PAYLOAD", "at=", start, "len=", rd_end - start);
-		start = realign(start, rd_end - start);
-	}
+	if (tr.start != rd_start)
+		con_hex2("PAYLOAD", "at=", tr.start, "len=", tr.len);
+	uintptr_t start = realign(tr.start, tr.len);
 	const struct payload *p = (const struct payload *)start;
 	if (p->version != 1 || (p->adt_off & 7))
 		return "bad payload header";
 
 	uint64_t pa_of_va_base = p->phys_base - p->virt_base;	/* pa = va + this */
 	con_range("PHYS", p->phys_base, p->mem_size);
+	con_range("RAM", tr.ram_base, tr.ram_size);
 	con_hex("VIRT", p->virt_base);
 	con_hex("ENTRY", p->entry_va);
+	if (p->phys_base < tr.ram_base || p->phys_base + p->mem_size > tr.ram_base + tr.ram_size)
+		return "bad payload trailer";
 
 	/* The payload must not overlap where the kernel goes. */
-	if (rd_end > p->phys_base && rd_start < p->phys_base + p->mem_size)
+	struct ram_check rc = { tr.ram_base, tr.ram_base + tr.ram_size, 0, 0 };
+	if (rd_end > rc.lo && rd_start < rc.hi)
 		return "ramdisk overlaps kernel memory";
 
 	/* ABL's live FDT: the kernel's RAM must be DDR and free of fixed carve-outs. */
-	struct ram_check rc = { p->phys_base, p->phys_base + p->mem_size, 0, 0 };
 	if (!fdt_ranges(dtb, ram_range, &rc))
 		refuse("FDT unreadable, no RAM check");
 	if (!rc.in_ddr)

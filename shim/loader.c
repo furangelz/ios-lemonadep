@@ -149,9 +149,12 @@ static void __attribute__((noreturn)) refuse(const char *why)
 		__asm__ volatile("wfe");
 }
 
+#define MAX_DDR		32
+
 struct ram_check {
 	uint64_t lo, hi;	/* RAM the kernel touches [lo, hi) */
-	int in_ddr, clashes;
+	int n_ddr, clashes;
+	uint64_t ddr[MAX_DDR][2];	/* /memory ranges [base, end) */
 };
 
 static void ram_range(void *ctx, int kind, uint64_t base, uint64_t size)
@@ -160,12 +163,31 @@ static void ram_range(void *ctx, int kind, uint64_t base, uint64_t size)
 
 	if (kind == FDT_RANGE_MEMORY) {
 		con_range("DDR", base, size);
-		if (base <= rc->lo && rc->hi <= base + size)
-			rc->in_ddr = 1;
+		if (rc->n_ddr < MAX_DDR) {
+			rc->ddr[rc->n_ddr][0] = base;
+			rc->ddr[rc->n_ddr][1] = base + size;
+			rc->n_ddr++;
+		}
 	} else if (base < rc->hi && rc->lo < base + size) {
 		con_range("CLASH", base, size);
 		rc->clashes++;
 	}
+}
+
+/* ABL may list DDR as several adjacent ranges: is [lo, hi) inside their union? */
+static int ram_in_ddr(const struct ram_check *rc)
+{
+	uint64_t at = rc->lo;
+
+	for (int progress = 1; progress && at < rc->hi;) {
+		progress = 0;
+		for (int i = 0; i < rc->n_ddr; i++)
+			if (rc->ddr[i][0] <= at && at < rc->ddr[i][1]) {
+				at = rc->ddr[i][1];
+				progress = 1;
+			}
+	}
+	return at >= rc->hi;
 }
 
 const char *loader_boot(uintptr_t dtb)
@@ -196,14 +218,17 @@ const char *loader_boot(uintptr_t dtb)
 		return "bad payload trailer";
 
 	/* The payload must not overlap where the kernel goes. */
-	struct ram_check rc = { tr.ram_base, tr.ram_base + tr.ram_size, 0, 0 };
+	struct ram_check rc;	/* no initializer: zeroing ddr[] could become a memset call */
+	rc.lo = tr.ram_base;
+	rc.hi = tr.ram_base + tr.ram_size;
+	rc.n_ddr = rc.clashes = 0;
 	if (rd_end > rc.lo && rd_start < rc.hi)
 		return "ramdisk overlaps kernel memory";
 
 	/* ABL's live FDT: the kernel's RAM must be DDR and free of fixed carve-outs. */
 	if (!fdt_ranges(dtb, ram_range, &rc))
 		refuse("FDT unreadable, no RAM check");
-	if (!rc.in_ddr)
+	if (!ram_in_ddr(&rc))
 		refuse("kernel RAM is not inside /memory");
 	if (rc.clashes)
 		refuse("kernel RAM overlaps reserved-memory");

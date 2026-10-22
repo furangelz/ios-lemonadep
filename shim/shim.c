@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include "console.h"
 #include "mmu.h"
+#include "fdt.h"
 #include "loader.h"
 #include "ufs.h"
 
@@ -416,6 +417,53 @@ static uint32_t to_us(uint64_t ticks)
 	return ticks * 10 / 192;	/* 19.2 MHz */
 }
 
+/* ---- memory map page (no payload) ---- */
+
+struct rsv_list {
+	uint64_t lo, hi;	/* a range waiting for its line partner */
+	int pending, count;
+};
+
+static void rsv_range(void *ctx, int kind, uint64_t base, uint64_t size)
+{
+	struct rsv_list *l = ctx;
+
+	if (kind != FDT_RANGE_RESERVED)
+		return;
+	l->count++;
+	if (l->pending) {
+		con_spans(l->lo, l->hi, base, base + size, 1);
+		l->pending = 0;
+	} else {
+		l->lo = base;
+		l->hi = base + size;
+		l->pending = 1;
+	}
+}
+
+/*
+ * What ABL's device tree says about RAM, for porting other loaders: every fixed
+ * /reserved-memory region (lo-hi, two per line), then whether the windows HackiOS's
+ * Mu-Silicium boot uses on lemonadep are DDR and free. On screen for 30 s.
+ */
+static void memmap_page(uintptr_t dtb)
+{
+	struct rsv_list l = { 0, 0, 0, 0 };
+
+	con_clear(BLUE);
+	con_str("MEMMAP", "ABL FDT reserved-memory:");
+	fdt_ranges(dtb, rsv_range, &l);
+	if (l.pending)
+		con_spans(l.lo, l.hi, 0, 0, 0);
+	con_hex2("RSV", "n=", l.count, 0, 0);
+	con_skip();
+	int xnup = loader_ram_ok(dtb, 0xF0000000UL, 0x04000000UL);
+	con_str("XNUP", xnup ? "F0000000+64M: DDR, free" : "F0000000+64M: NOT FREE");
+	int fd = loader_ram_ok(dtb, 0x9FD00000UL, 0x00200000UL);
+	con_str("UEFI FD", fd ? "9FD00000+2M: DDR, free" : "9FD00000+2M: NOT FREE");
+	delay_ms(30000);
+}
+
 void shim_main(uint64_t dtb)
 {
 	struct mmu_info mi;
@@ -428,6 +476,9 @@ void shim_main(uint64_t dtb)
 	const char *why = loader_boot(dtb);
 	con_str("LOADER", why);
 	con_skip();
+	delay_ms(3000);
+	memmap_page(dtb);
+	con_clear(RED);
 
 	/* No payload: probe the internal UFS while the MMU is still off. */
 	stage = "ufs";

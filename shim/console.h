@@ -27,5 +27,7 @@ void con_str(const char *label, const char *s);
 void con_hex(const char *label, uint64_t v);
 /* label, then two 64-bit values (e.g. base and size) */
 void con_range(const char *label, uint64_t a, uint64_t b);
+/* one or two address ranges lo-hi (9 hex digits each), no label */
+void con_spans(uint64_t lo0, uint64_t hi0, uint64_t lo1, uint64_t hi1, int two);
 /* label, then "a=xxxxxxxx b=xxxxxxxx" style pairs of 32-bit values */
 void con_hex2(const char *label, const char *a, uint32_t va, const char *b, uint32_t vb);

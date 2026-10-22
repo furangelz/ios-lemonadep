@@ -91,6 +91,26 @@ void con_range(const char *label, uint64_t a, uint64_t b)
 	row++;
 }
 
+void con_spans(uint64_t lo0, uint64_t hi0, uint64_t lo1, uint64_t hi1, int two)
+{
+	char buf[10];
+	int col = 0;
+
+	fmt_hex(buf, lo0, 9);
+	col = put_str(col, buf, WHITE);
+	col = put_str(col, "-", YELLOW);
+	fmt_hex(buf, hi0, 9);
+	col = put_str(col, buf, WHITE);
+	if (two) {
+		fmt_hex(buf, lo1, 9);
+		col = put_str(col + 1, buf, WHITE);
+		col = put_str(col, "-", YELLOW);
+		fmt_hex(buf, hi1, 9);
+		put_str(col, buf, WHITE);
+	}
+	row++;
+}
+
 void con_hex2(const char *label, const char *a, uint32_t va, const char *b, uint32_t vb)
 {
 	char buf[9];

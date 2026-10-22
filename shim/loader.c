@@ -190,6 +190,15 @@ static int ram_in_ddr(const struct ram_check *rc)
 	return at >= rc->hi;
 }
 
+int loader_ram_ok(uintptr_t dtb, uint64_t base, uint64_t size)
+{
+	struct ram_check rc;	/* no initializer: zeroing ddr[] could become a memset call */
+	rc.lo = base;
+	rc.hi = base + size;
+	rc.n_ddr = rc.clashes = 0;
+	return fdt_ranges(dtb, ram_range, &rc) && ram_in_ddr(&rc) && !rc.clashes;
+}
+
 const char *loader_boot(uintptr_t dtb)
 {
 	uint64_t rd_start, rd_end;

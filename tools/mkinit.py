@@ -3,6 +3,9 @@
 
   mkinit.py OBJECT OUT [ENTITLEMENTS.plist]   (OBJECT: clang -target arm64-apple-ios16.0 -c sweet-init.S)
 
+OBJECT may also be an aarch64 ELF object, for hosts without clang:
+  aarch64-linux-gnu-gcc -c tools/sweet-init.S -o sweet-init.o
+
 No available linker produces static iOS executables on Linux, and the program
 is a single position-independent __text section, so the executable is laid
 out here directly:
@@ -59,6 +62,34 @@ def text_of(obj):
     raise SystemExit('no global _start')
 
 
+def text_of_elf(obj):
+    """Return (.text bytes, _start offset) of an aarch64 ELF object; same rules as text_of."""
+    assert obj[4] == 2 and obj[5] == 1 and struct.unpack_from('<H', obj, 18)[0] == 183, 'not an aarch64 ELF64 object'
+    shoff, = struct.unpack_from('<Q', obj, 0x28)
+    shentsize, shnum, shstrndx = struct.unpack_from('<HHH', obj, 0x3a)
+    sh = [struct.unpack_from('<IIQQQQIIQQ', obj, shoff + i * shentsize) for i in range(shnum)]
+    name = lambda strtab, off: obj[strtab + off:].split(b'\0')[0].decode()
+    shstr = sh[shstrndx][4]
+    text_idx, text, symtab = None, None, None
+    for i, (nm, typ, _, _, off, size, link, _, _, _) in enumerate(sh):
+        sname = name(shstr, nm)
+        if typ in (4, 9):	# SHT_RELA / SHT_REL
+            assert size == 0, f'{sname}: code must be position independent'
+        elif sname == '.text':
+            text_idx, text = i, obj[off:off + size]
+        elif typ == 2:		# SHT_SYMTAB
+            symtab = (off, size, sh[link][4])
+        elif typ == 1 and sname in ('.data', '.rodata') or typ == 8 and sname == '.bss':
+            assert size == 0, f'unexpected non-empty section {sname}'
+    assert text is not None and symtab, 'no .text or symbol table'
+    off, size, strtab = symtab
+    for o in range(off, off + size, 24):
+        st_name, st_info, _, st_shndx, st_value, _ = struct.unpack_from('<IBBHQQ', obj, o)
+        if name(strtab, st_name) == '_start' and st_info >> 4 == 1 and st_shndx == text_idx:	# STB_GLOBAL
+            return bytes(text), st_value
+    raise SystemExit('no global _start')
+
+
 def segment(name, vmaddr, vmsize, fileoff, filesize, prot, sections=()):
     cmd = struct.pack('<II16sQQQQIIII', LC_SEGMENT_64, 72 + 80 * len(sections), name.encode(),
                       vmaddr, vmsize, fileoff, filesize, prot, prot, len(sections), 0)
@@ -98,7 +129,7 @@ def code_signature(image, code_limit, text_size, entitlements=None):
 
 
 def build(obj, entitlements=None):
-    code, start = text_of(obj)
+    code, start = text_of_elf(obj) if obj[:4] == b'\x7fELF' else text_of(obj)
     assert CODE_OFF + len(code) <= SEG, 'code does not fit in one __TEXT page'
     sect = struct.pack('<16s16sQQIIIIIIII', b'__text', b'__TEXT', BASE + CODE_OFF, len(code),
                        CODE_OFF, 3, 0, 0, S_ATTR_CODE, 0, 0, 0)

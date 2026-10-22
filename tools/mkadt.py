@@ -149,14 +149,18 @@ def build(seed=None, qemu=False, highmem=False, target='sweet'):
     cpu_nodes = []
     for core in range(1 if qemu else 8):
         if target == 'lemonadep':
+            # SweetCPU matches its nubs by name: 'sweet,cpu' from xnu 0085 on,
+            # only 'qcom,kryo470' before. Without a match no CPU is ever
+            # started and boot waits forever after the IOKit drivers.
+            sweet_cpu = cstr('sweet,cpu') + cstr('qcom,kryo470')
             if core < 4:
-                cpu_compat = cstr('arm,cortex-a55') + cstr('ARM,v8')
+                cpu_compat = cstr('arm,cortex-a55') + sweet_cpu + cstr('ARM,v8')
                 clock_freq = 1800000000
             elif core < 7:
-                cpu_compat = cstr('arm,cortex-a78') + cstr('ARM,v8')
+                cpu_compat = cstr('arm,cortex-a78') + sweet_cpu + cstr('ARM,v8')
                 clock_freq = 2420000000
             else:
-                cpu_compat = cstr('arm,cortex-x1') + cstr('ARM,v8')
+                cpu_compat = cstr('arm,cortex-x1') + sweet_cpu + cstr('ARM,v8')
                 clock_freq = 2840000000
         else:
             cpu_compat = cstr('qcom,kryo470') + cstr('ARM,v8')

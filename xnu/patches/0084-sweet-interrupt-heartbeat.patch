@@ -1,0 +1,82 @@
+--- a/pexpert/pexpert/arm/protos.h
++++ b/pexpert/pexpert/arm/protos.h
+@@ -38,6 +38,8 @@
+ void pe_init_fiq(void);
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ extern uint32_t sweet_vtimer_intid;
++/* sweetbeat=1: blink a square per interrupt source (0 timer, 1 IPI) */
++void sweet_fbcon_beat(unsigned int source);
+ #endif
+ 
+ #ifdef PRIVATE
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -720,6 +720,8 @@
+ static volatile uint32_t *fbcon_base;
+ static uint32_t fbcon_width, fbcon_height, fbcon_stride;
+ static uint32_t fbcon_cols, fbcon_rows, fbcon_col, fbcon_row;
++static uint32_t fbcon_beat_on;		/* boot-arg sweetbeat=1 */
++static uint64_t fbcon_beat_interval;	/* 250 ms in timebase ticks */
+ 
+ static void
+ fbcon_clear_row(uint32_t row)
+@@ -839,6 +841,41 @@
+ 	sweet_early_mark(18, "fbcon mapping returned");
+ 	if (fbcon_base != NULL) {
+ 		register_serial_functions(&sweet_fbcon_serial_functions);
++		PE_parse_boot_argn("sweetbeat", &fbcon_beat_on, sizeof(fbcon_beat_on));
++		nanoseconds_to_absolutetime(250 * NSEC_PER_MSEC, &fbcon_beat_interval);
++	}
++}
++
++/*
++ * sweetbeat=1 heartbeat, called from sleh_irq for every virtual timer
++ * (source 0) and IPI (source 1) interrupt. Each source toggles its own
++ * 40x40 square near the top right corner (green: timer, blue: IPI) at most
++ * every 250 ms, so a blinking square means that source keeps interrupting
++ * and a steady or missing one that it stopped. Text that scrolls over a
++ * square hides it until its next toggle.
++ */
++void
++sweet_fbcon_beat(unsigned int source)
++{
++	static uint64_t next[2];
++	static uint32_t lit[2];
++
++	if (!fbcon_beat_on || fbcon_base == NULL || source > 1 || fbcon_width < 160 || fbcon_height < 100) {
++		return;
++	}
++	uint64_t now = mach_absolute_time();
++	if (now < next[source]) {
++		return;
++	}
++	next[source] = now + fbcon_beat_interval;
++	lit[source] ^= 1;
++	uint32_t color = !lit[source] ? FBCON_BG : (source ? 0xff4080ffu : 0xff00ff00u);
++	uint32_t x0 = fbcon_width - 64 - source * 56, y0 = 48;
++	for (uint32_t y = y0; y < y0 + 40; y++) {
++		volatile uint32_t *line = fbcon_base + y * (fbcon_stride / 4);
++		for (uint32_t x = x0; x < x0 + 40; x++) {
++			line[x] = color;
++		}
+ 	}
+ }
+ 
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1869,6 +1869,7 @@
+ 	}
+ 	if (intid == sweet_vtimer_intid) {
+ 		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_TIMER);
++		sweet_fbcon_beat(0);
+ 		cdp->cpu_decrementer = -1; /* Large */
+ 		INTERRUPT_MASKED_DEBUG_START(rtclock_intr, DBG_INTR_TYPE_TIMER);
+ 		rtclock_intr(TRUE);
+@@ -1876,6 +1877,7 @@
+ 		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
+ 	} else if (intid < 16) {
+ 		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_IPI);
++		sweet_fbcon_beat(1);
+ 		/* Ack before handling so an IPI raised meanwhile is not lost */
+ 		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
+ 		__builtin_arm_isb(ISB_SY);

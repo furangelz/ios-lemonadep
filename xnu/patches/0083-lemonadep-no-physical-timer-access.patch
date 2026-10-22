@@ -1,0 +1,20 @@
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -2273,8 +2273,17 @@
+ 	uint64_t cntvctl = CNTV_CTL_EL0_ENABLE; /* One wants to use 32 bits, but "mrs" prefers it this way */
+ 
+ 	__builtin_arm_wsr64("CNTV_CTL_EL0", cntvctl);
++#if defined(SWEET)
++	/*
++	 * Not on SWEET: on SM8350 (lemonadep) Qualcomm's hypervisor traps EL1
++	 * physical timer accesses, delivered as an undefined instruction. The
++	 * GIC only enables the virtual timer PPI, so a stray physical timer
++	 * cannot interrupt anyway.
++	 */
++#else
+ 	/* disable the physical timer as a precaution, as its registers reset to architecturally unknown values */
+ 	__builtin_arm_wsr64("CNTP_CTL_EL0", CNTP_CTL_EL0_IMASKED);
++#endif
+ }
+ 
+ void

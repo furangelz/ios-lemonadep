@@ -9,3 +9,6 @@ shim/out/
 xnu/out/
 xnu/out-*/
 __pycache__/
+# HackiOS checkouts (separate repos, reference for the lemonadep port)
+hackios-xnu-kernel/
+hackios-xnu-userland/

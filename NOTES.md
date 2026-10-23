@@ -85,8 +85,8 @@
       - Touch works at the same time.
     - **Open: heat.** GPU tsens read 48 → 67 °C within about 5 minutes. The GPU is fixed at 540 MHz with no hardware clock gating (step 20 leaves out the a660_hwcg list) and no thermal management; the big core is at top speed (cpufreq=1). The vendor throttles the GPU passively at 95 °C (lahaina-thermal.dtsi gpuss-*-step).
       - Ideas: `adreno_speed=1` (315 MHz at LOW_SVS); write the vendor's a660_hwcg_regs; react to tsens in `redwood_adreno_minute()`.
-    - **Open: lock-screen wallpaper strips.** Horizontal seams in the dark gradient at y = 243·k (243, 486, 729, 972, 1457). No vertical seams; 243 is not a multiple of the GPU's 16-row tile alignment.
-      - Guess, untested: the wallpaper is rendered in about ten strips somewhere other than the GPU. Compare with a `gl=0` run before blaming the GPU.
+    - **Explained: the lock-screen "strips"** (seams at y = 243·k in `logs/gpu-ios1-a.png`) come from the screenshot, not from rendering. `oem screenshot` stages the live framebuffer and `upload` sends it in `USB_CHUNK` = 1 MiB pieces (242.7 rows of 4320 bytes) over about 0.4 s, so on an animating screen each band is a different moment.
+      - A coherent screenshot would need the loader to copy the picture first. With flips it should also read the picture the pipes point at, not always 0xe4d00000.
     - **SOLVED 2026-10-23 19:10: no more tearing: page flips** (kernel `cc7fd3b`).
       - **Probe** (`dpu_probe=1`, `bsd/dev/redwood_dpu.c`): DPU 7.0 (mdss 0x70000000). Both register clocks were off as found and are turned on first: gcc disp_ahb 0x127004, dispcc mdss_ahb **0xaf0207c** (`tools/dispsnap.py` names 0xaf02080, which is wrong; source: vendor dispcc-lahaina.c).
       - **Engine state:** vig0 and vig1 read 0xe4d00000 (left/right 540-pixel halves) for ctl0, through LM0/LM1 and DSC0/1, into INTF1/DSI0. INTF1 autorefresh is 0x80000001 (every TE) with tear check on (hw TE). That is 120 transfers/s, 2.8 ms each.

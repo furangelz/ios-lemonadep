@@ -76,7 +76,18 @@
       - 13-17: GMU SMMU context via the hypervisor; GMU fw core 0x30010008 runs; HFI 2.1 queues; tables accepted; GX powered, gfx3d measured 539.999 MHz.
       - 18-22: core SMMU context + LPAC stream; TZ authenticates and starts the zap shader; CP_ME_INIT; out of secure mode; 0x600dc0de written on command; three bands drawn into a 1080x2412 picture shown on the panel (`logs/gpu-run6.png`).
       - Everything was switched off again at the end of each run (slumber, zap unloaded, CX off).
-    - **Not yet:** iOS drawing with it. That needs `gpu=1` (the GPU kept for the RedwoodGPU service) and a `GL=1` userland (Mesa 25.0.7 freedreno via `tools/mk-mesa.sh`). A `GL=1` image build was started 2026-10-23 ~16:58 (`logs/images-gl.log`).
+    - **MILESTONE 2026-10-23 17:01: iOS DRAWS WITH THE GPU.** Profile commit `4badb47`: `gpu=1` in BOOTARGS, `USERLAND_VARS="GL=1"`.
+      - The `GL=1` images built on the host with HackiOS's `tools/mk-mesa.sh` (Mesa 25.0.7, all tools present). root.apfs is 10.7 MB; system.apfs was not rebuilt.
+      - Run (`logs/170055-run.log*`): `XL_CMDLINE="cpus=8 bootcpu=7 cpufreq=1 buttons=1 touchscreen=1 touch_power=1 board=lemonadep gpu=1"`.
+      - Log: `adreno: THE GPU STAYS ON ... RedwoodGPU`, then `redwood-gl: ... OpenGL ES 3.2 Mesa 25.0.7; FD660`. Mesa matches chip 0x06060001 to its `GPUId(660)` entry (0x060600ff, patch wildcard).
+      - Lock screen (tinted clock, depth effect) and home screen (dock, Search pill, folder blur) are GPU-drawn: `logs/gpu-ios1-a.png`, `-b.png`.
+      - 3000 frames, 0 GL errors, no `adreno: gpu:` fault reports. About 3.5 ms a frame on the CPU side, 0.4 ms waiting for the GPU.
+      - Touch works at the same time.
+    - **Open: heat.** GPU tsens read 48 → 67 °C within about 5 minutes. The GPU is fixed at 540 MHz with no hardware clock gating (step 20 leaves out the a660_hwcg list) and no thermal management; the big core is at top speed (cpufreq=1). The vendor throttles the GPU passively at 95 °C (lahaina-thermal.dtsi gpuss-*-step).
+      - Ideas: `adreno_speed=1` (315 MHz at LOW_SVS); write the vendor's a660_hwcg_regs; react to tsens in `redwood_adreno_minute()`.
+    - **Open: lock-screen wallpaper strips.** Horizontal seams in the dark gradient at y = 243·k (243, 486, 729, 972, 1457). No vertical seams; 243 is not a multiple of the GPU's 16-row tile alignment.
+      - Guess, untested: the wallpaper is rendered in about ten strips somewhere other than the GPU. Compare with a `gl=0` run before blaming the GPU.
+    - **Re-getting the firmware:** `xl enter`, then `tools/super_read.py vendor_a OUT.img`, then erofs-utils' `fsck.erofs --extract=DIR --no-preserve OUT.img` (built from erofs-utils-1.8.2 + lz4-1.10.0, in `research/lemon/tools/`), then copy `firmware/a660_{gmu.bin,sqe.fw,zap.mdt,zap.b0[0-2]}` to `fw-gpu/`.
     - ios-lemonadep's `lemonadep/xnu/gpu/` is not a driver (host-tested pieces). Its A660 fence-range value (0xa/0xa0) disagrees with the vendor's `GMU_FENCE_RANGE_MASK`, which redwood already uses.
 
     Also open: confirm the volume HUD; Wi-Fi (check the 9 Pro radio); battery/charger (loader path is redwood-only); alert slider (hall sensors gpio 50/51).

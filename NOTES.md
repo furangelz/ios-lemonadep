@@ -87,6 +87,15 @@
       - Ideas: `adreno_speed=1` (315 MHz at LOW_SVS); write the vendor's a660_hwcg_regs; react to tsens in `redwood_adreno_minute()`.
     - **Open: lock-screen wallpaper strips.** Horizontal seams in the dark gradient at y = 243·k (243, 486, 729, 972, 1457). No vertical seams; 243 is not a multiple of the GPU's 16-row tile alignment.
       - Guess, untested: the wallpaper is rendered in about ten strips somewhere other than the GPU. Compare with a `gl=0` run before blaming the GPU.
+    - **SOLVED 2026-10-23 19:10: no more tearing: page flips** (kernel `cc7fd3b`).
+      - **Probe** (`dpu_probe=1`, `bsd/dev/redwood_dpu.c`): DPU 7.0 (mdss 0x70000000). Both register clocks were off as found and are turned on first: gcc disp_ahb 0x127004, dispcc mdss_ahb **0xaf0207c** (`tools/dispsnap.py` names 0xaf02080, which is wrong; source: vendor dispcc-lahaina.c).
+      - **Engine state:** vig0 and vig1 read 0xe4d00000 (left/right 540-pixel halves) for ctl0, through LM0/LM1 and DSC0/1, into INTF1/DSI0. INTF1 autorefresh is 0x80000001 (every TE) with tear check on (hw TE). That is 120 transfers/s, 2.8 ms each.
+      - **Cause:** the framebuffer driver scaled frames into that memory (about 4 ms, three threads, on its own 60 Hz timer), so transfers caught half-written frames.
+      - **Fix:** a second picture at 0xe5700000 inside cont_splash (DT 0xe4d00000 + 0x2300000; the pipe address registers are 32-bit; kernel memory below 4 GB is not available contiguously). `ml_io_map_wcomb` of 10 MB panicked (`kmem_alloc ... failed with 3`), so it is mapped WC through `IOMemoryDescriptor::withPhysicalAddress`.
+      - **Per frame:** draw into the picture not being read, set both SSPP_SRC0_ADDR, CTL0_FLUSH bits 0|1. The engine takes it at the start of the next autorefresh transfer (flush bits clear). The next frame waits for that.
+      - **Verified on the phone:** every frame flipped, 2.7-4.9 ms average wait. `loader_return()` points the pipes back at 0xe4d00000, and the next run finds them there. `dpu_flip=0` disables flips.
+      - **Caveat:** `xl screenshot` reads 0xe4d00000, which is one of the two pictures, so it may be one frame old.
+      - **Not changed:** CoreAnimation's own 60 Hz clock (fb_hz) and the driver's beat; the panel runs at 120 Hz.
     - **Re-getting the firmware:** `xl enter`, then `tools/super_read.py vendor_a OUT.img`, then erofs-utils' `fsck.erofs --extract=DIR --no-preserve OUT.img` (built from erofs-utils-1.8.2 + lz4-1.10.0, in `research/lemon/tools/`), then copy `firmware/a660_{gmu.bin,sqe.fw,zap.mdt,zap.b0[0-2]}` to `fw-gpu/`.
     - ios-lemonadep's `lemonadep/xnu/gpu/` is not a driver (host-tested pieces). Its A660 fence-range value (0xa/0xa0) disagrees with the vendor's `GMU_FENCE_RANGE_MASK`, which redwood already uses.
 

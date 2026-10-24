@@ -37,7 +37,11 @@ USB never comes back after the cable is pulled during a run; charging while the 
 the DSP up across `loader_return()`?); fast charging (needs OnePlus's VOOC handshake); Wi-Fi; the sound path
 (the DSP and its APR services are up); data that survives a reboot.
 
-**Latest commits:** kernel `c349c02` (lemonadep), userland `288929f` (lemonadep).
+**Latest commits:** kernel `c349c02` (lemonadep), userland `288929f` (lemonadep), hub `8ce4e7f` (restructure), all
+pushed 2026-10-24. Remotes in the local checkouts: `origin` = the furangelz forks, `upstream` = oosexgang (kernel:
+`git remote -v`; userland: `common/ugit remote -v`). A fresh `git clone` of this hub + `./setup.sh` was checked to
+reproduce the workspace. (The standalone `hackios-xnu-userland/` clone next to the kernel checkout is no longer
+used: the userland's origin was it, now it is the fork.)
 
 **Safety, learned the hard way:**
 - The battery emptied once (0%, 6.71 V pack, 2026-10-24): under load the phone uses more than a PC port gives, and

@@ -1,14 +1,33 @@
-# device dumps: persist/modemst/fsg hold IMEI + calibration; live DT holds the serial
+# A whitelist: this working tree also holds the HackiOS checkouts (hackios-xnu-kernel/, tens of GB with iOS,
+# Mu-Silicium and build output), research/ (the phone's partitions, vendor sources, dumps), reference clones
+# and build output, none of which belongs in this repository. Nothing is tracked unless it is named here.
+/*
+!/.gitignore
+!/.github/
+!/README.md
+!/NOTES.md
+!/AGENTS.md
+!/setup.sh
+!/legacy/
+
+# build output of the ios-sweet shim and kernel series (legacy)
+/legacy/sweet/shim/out/
+/legacy/sweet/xnu/out/
+/legacy/sweet/xnu/out-*/
+
+# device dumps (persist/modemst/fsg hold IMEI and calibration; a live DT holds the serial), the phone's firmware
 backup/
 dtb/
-dtb-lemonadep/
+dtb-*/
 recovery/
-# third-party/Apple sources fetched for reading
-research/
-shim/out/
-xnu/out/
-xnu/out-*/
+fw-*/
+*.img
+*.dtb
+logs/
+
 __pycache__/
-# HackiOS checkouts (separate repos, reference for the lemonadep port)
-hackios-xnu-kernel/
-hackios-xnu-userland/
+*.pyc
+*~
+*.orig
+*.rej
+.DS_Store

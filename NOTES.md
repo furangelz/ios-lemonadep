@@ -1,6 +1,6 @@
 # iOS 16.5 on the OnePlus 9 Pro (lemonadep) - working notes
 
-## Current state and handoff (2026-10-25, read first)
+## Current state and handoff (2026-10-24, read first)
 
 **Where the code is.** The port is HackiOS (github.com/oosexgang) carried to the OnePlus 9 Pro: the `lemonadep`
 branches of [furangelz/hackios-xnu-kernel](https://github.com/furangelz/hackios-xnu-kernel/tree/lemonadep) and
@@ -29,46 +29,16 @@ adsp=1`). Logs in `hackios-xnu-kernel/logs/` (first 256 KB + last 1 MB of a run)
 
 **Works:** boot to SpringBoard in RAM; touch (S3908), keys, 7 cores; Adreno 660 (Mesa, GL); tear-free page flips;
 brightness from iOS; battery level (BQ28Z610); charging by the phone's own audio DSP firmware (500 mA input);
-processors and memory slowed with the screen off; **Metal** for applications and for the window server (below).
+processors and memory slowed with the screen off.
 
-**Metal (2026-10-25).** iOS's own Metal.framework finds HackiOS's driver (`userland/src/redwoodmetal.m`, the plug-in
-`RedwoodMetal.bundle`), which compiles Apple's AIR bitcode with the frontend in `tools/mesa/air` (AIR -> NIR -> Mesa's
-ir3 for the Adreno 660) and draws through Mesa's freedreno. Boot-args: `metal=1 metal_profile=1` for applications;
-add `camtl=1` and CoreAnimation in backboardd composites with Metal as well (without it the window server keeps
-OpenGL ES, as before). Job list `userland/rc.jobs.lemonmetal` (image: `SKIP="kernel loader boot" common/build.sh
-lemonadep QUIET=1 RC_JOBS=rc.jobs.lemonmetal`; `SYSTEM=1` once for RedwoodTriangle.app), then `XL_CMDLINE='<profile>
-metal=1 metal_profile=1 camtl=1'`.
-- Observed (run 7, `logs/171615-run.log`, screenshots `logs/metal7-{50,90,110}.png`): with `camtl=1` the home
-  screen (wallpaper, Weather/Calendar widgets, icons, dock, live clock hand), the Today view (Calendar, Weather,
-  News widgets drawn by chronod's RenderBox over the blurred wallpaper) on the panel; no process crashed, battery
-  77% -> 76%. Run 6: an application's CAMetalLayer frame composited full screen; `triangle_app --layer` read back 0
-  wrong pixels of 2 740 500. The window server's command buffers take about 5 ms each (one pass, 5-6 draws).
-- Not right yet (observed): black or brightly coloured boxes behind some icon labels and one widget (yellow in
-  run 7, black in run 8) that change from frame to frame; the dock and Search pill materials are flat blue (dark
-  navy in run 9, blue again in run 10). Runs 8-10 added multisample resolves, textures over buffers and over the
-  caller's memory (CoreAnimation's full-screen ASTC 4x4 image), and new textures zeroed: none of it changed the
-  boxes. backboardd's frames are one pass of 3-6 draws and no blits. Guesses, not tested: the boxes come from
-  CoreAnimation's in-shader blending (its uber-shader reads the framebuffer, `[[color(n)]]`, with hardware
-  blending off) getting a wrong destination; the materials from a backdrop texture nothing ever fills.
-  Framebuffer fetch has never been checked by value on the phone (`tools/air/fbfetchcheck.py` checks the
-  instruction only); that is the next thing to measure.
-- On the PC (`tools/air/mk-host.sh` tools): QuartzCore 137/141 functions translate and compile with ir3 for the 660
-  (4 tile shaders need imageblocks), RenderBox 47/47, MPSImage 1632/1825, SiriUICore 19/20 (SiriBlur writes a mip
-  level chosen at run time). The corpus check (`tools/air/check.sh`) is unchanged at 321/456 translated, cpuref 255
-  agree / 0 differ, intrincheck folded 0 differ. Its run-on-softpipe section reports 25 of 168 differing, all
-  `fmin`/`fmax`/`clamp` of -0 and +0 (softpipe returns -0); docs/air.md recorded 34 differing (i64 min/max/clamp,
-  fmod's -0) for a different suite -- the two were not run side by side, so "no regression" there is a reading.
-
-**Open, in about this order:** Metal's remaining artifacts (above: MSAA resolve, textures over caller memory and
-over buffers, the materials); horizontal tearing inside iOS's picture while scrolling (all frames are flipped whole);
+**Open, in about this order:** horizontal tearing inside iOS's picture while scrolling (all frames are flipped whole);
 heat under use (a load-based CPU/memory governor instead of always-top); a magenta tint seen once; the loader's
 USB never comes back after the cable is pulled during a run; charging while the phone waits in the loader (keep
 the DSP up across `loader_return()`?); fast charging (needs OnePlus's VOOC handshake); Wi-Fi; the sound path
 (the DSP and its APR services are up); data that survives a reboot.
 
-**Latest commits:** kernel `bb3ab6b` (lemonadep: Metal on the port page), userland `fe7d264`, `0cdf69a`, `e64c0bd`
-(lemonadep: frontend, library, driver for Metal), hub: this file; 2026-10-25. Before that kernel `c349c02`, userland
-`288929f`, hub `8ce4e7f`, pushed 2026-10-24. Remotes in the local checkouts: `origin` = the furangelz forks, `upstream` = oosexgang (kernel:
+**Latest commits:** kernel `c349c02` (lemonadep), userland `288929f` (lemonadep), hub `8ce4e7f` (restructure), all
+pushed 2026-10-24. Remotes in the local checkouts: `origin` = the furangelz forks, `upstream` = oosexgang (kernel:
 `git remote -v`; userland: `common/ugit remote -v`). A fresh `git clone` of this hub + `./setup.sh` was checked to
 reproduce the workspace. (The standalone `hackios-xnu-userland/` clone next to the kernel checkout is no longer
 used: the userland's origin was it, now it is the fork.)
@@ -82,41 +52,7 @@ used: the userland's origin was it, now it is the fork.)
   wall-charger tests the panel shows the end-of-run notes.
 - Keep device dumps, serial numbers, firmware and downloaded Apple files out of git.
 
-## Bring-up log (2026-10-21 .. 10-25)
-
-### 2026-10-25: Metal, up to CoreAnimation compositing with it
-
-Runs (all `fastboot boot`, nothing flashed; logs in `hackios-xnu-kernel/logs/`):
-- **Run 3 (012510) / run 4 (013244), `camtl=1`:** backboardd crash-looped. Run 3: denying Apple1 made CoreAnimation
-  ask for uber-shader variants that do not exist (override removed). Run 4: its uber-shader (`fixed_frag_lph_cph`,
-  58 function constants) was refused by the frontend; the static-initializer evaluator and the other frontend work
-  of `tools/mesa/air` fixed that (PC first, `air2nir --fc ...` with the constants the driver now logs).
-- **triangle_app died with SIGSEGV in its first -commit** after the driver moved to render passes. Reproduced on
-  the PC only partly (`air_metal_test --pass` passed on softpipe); fixed by releasing pass surfaces by reference
-  count instead of `surface_destroy`. Reading, not proven by a crash address: freedreno reorders batches on a6xx,
-  so the batch is rendered at the flush after the pass ended and dereferences the destroyed surfaces. After the
-  fix: run 5 `--layer` drew 2 frames, 0 wrong pixels.
-- **Run 5 (124840):** CoreAnimation's pipelines built; 2 of 3 draws failed (`reads buffer 0`, a buffer the
-  specialisation does not use) and SpringBoard aborted in MPS (`D8F18H` refused: a struct pointer passed to a
-  function). Fixed: inactive arguments are neither required nor bound; struct/pointer arguments as trees.
-- **Run 6 (170533):** backboardd, chronod, SpringBoard and the triangle application all committed with 0 failed
-  draws; the panel showed the application's frame full screen. Only refusal: two-plane YCbCr (format 500, the
-  wallpaper's 512x512 '420f' tiles from CollectionsPoster).
-- **Run 7 (171615):** home screen and Today view composited with Metal (Metal paragraph above); YCbCr surfaces are
-  copied to RGBA8 on the processor (Cr Y Cb, the order the uber-shader's arithmetic shows it reads).
-- **Runs 8-10 (175215, 180221, 180859):** multisample resolves, shadowed textures (over buffers and over the caller's
-  memory), ASTC, zeroed new textures. Run 9: backboardd died three times (SIGSEGV, pc 0) right after QuartzCore's
-  `newTextureWithBytesNoCopy`: the zero fill of an ASTC texture fell into Gallium's software clear, which has no
-  ASTC packer. Compressed textures are not zero-filled since; run 10 had no crash. The label boxes are unchanged.
-- **Battery:** 77% before and after 4 h 12 min in the loader (12:53 -> 17:05, run 5 to run 6), so the loader's own
-  drain is small; runs 5-7 ended at 77%, 77%, 76%.
-- Tools: `research/lemon/metal/uitest.sh LIB OUT` translates and ir3-compiles every function of a metallib
-  (git-ignored, like the rest of `research/`); `research/lemon/dsc/tools/mtlsends.py IMAGE DRIVER.m` lists the Metal
-  selectors an image sends and whether the driver defines them (its "MISSING" for newCommandQueue and supportsFamily:
-  are its own parsing; those work).
-- Caution found the hard way: after pointing `build/mesa-host/.../src/compiler/air` at another tree, ninja kept
-  objects newer than the sources it went back to; `touch tools/mesa/air/*` before rebuilding.
-
+## Bring-up log (2026-10-21 .. 10-24)
 
 > Paths in this log are as they were when written: `shim/`, `xnu/`, `tools/`, `site/`, `docs/` of this repository
 > are now under `legacy/sweet/`; `hackios-xnu-kernel/...` paths are in the kernel checkout.

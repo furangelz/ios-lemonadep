@@ -1,6 +1,6 @@
 # iOS 16.5 on the OnePlus 9 Pro (lemonadep) - working notes
 
-## Current state and handoff (2026-10-24, read first)
+## Current state and handoff (2026-10-25, read first)
 
 **Where the code is.** The port is HackiOS (github.com/oosexgang) carried to the OnePlus 9 Pro: the `lemonadep`
 branches of [furangelz/hackios-xnu-kernel](https://github.com/furangelz/hackios-xnu-kernel/tree/lemonadep) and
@@ -31,14 +31,28 @@ adsp=1`). Logs in `hackios-xnu-kernel/logs/` (first 256 KB + last 1 MB of a run)
 brightness from iOS; battery level (BQ28Z610); charging by the phone's own audio DSP firmware (500 mA input);
 processors and memory slowed with the screen off.
 
+**Metal (2026-10-25): tried, then reverted at the user's request.** In one day iOS's Metal.framework came to use
+HackiOS's driver on the 9 Pro and CoreAnimation composited the home screen with it (`camtl=1`), with artifacts
+left: boxes behind icon labels, flat blue dock and Search materials, a green wallpaper layer in some boots. All of
+it is undone by revert commits: kernel `2a9e669`, userland `4aff1c6`, hub `1046dc0`. The code is as at kernel
+`c349c02`, userland `288929f`, hub `911488d`, with HackiOS's own Metal driver and AIR frontend as released. The
+reverted commits stay in the history (kernel `bb3ab6b`; userland `fe7d264`, `0cdf69a`, `e64c0bd`; hub `f330719`,
+whose notes have the runs and what was measured). That day's uncommitted debugging work is only on the local
+branches `metal-2026-10-25`, not pushed: kernel `a24cd6a` (`/dev/redwood-hostdump`, boot-arg `hostdump_mb=N`,
+`xl hostdump`, `tools/hostdump.py`) and userland `b0d90fb` (`metal_dump=` frame dumps in the driver and more; its
+commit message lists it). Observed after the revert: the kernel and `userland/root.apfs` rebuilt from the reverted
+sources (23:37); not done: `userland/system.apfs` (built 2026-10-25 12:44, also the image resident on the phone)
+was not rebuilt, and its RedwoodTriangle.app was compiled that day, possibly with Metal-era changes to
+`triangle_app.m` (`SYSTEM=1` rebuilds it).
+
 **Open, in about this order:** horizontal tearing inside iOS's picture while scrolling (all frames are flipped whole);
 heat under use (a load-based CPU/memory governor instead of always-top); a magenta tint seen once; the loader's
 USB never comes back after the cable is pulled during a run; charging while the phone waits in the loader (keep
 the DSP up across `loader_return()`?); fast charging (needs OnePlus's VOOC handshake); Wi-Fi; the sound path
 (the DSP and its APR services are up); data that survives a reboot.
 
-**Latest commits:** kernel `c349c02` (lemonadep), userland `288929f` (lemonadep), hub `8ce4e7f` (restructure), all
-pushed 2026-10-24. Remotes in the local checkouts: `origin` = the furangelz forks, `upstream` = oosexgang (kernel:
+**Latest commits:** kernel `2a9e669`, userland `4aff1c6` (the Metal reverts, lemonadep), hub: this file; pushed
+2026-10-25. Before the Metal work: kernel `c349c02`, userland `288929f`, hub `8ce4e7f`, pushed 2026-10-24. Remotes in the local checkouts: `origin` = the furangelz forks, `upstream` = oosexgang (kernel:
 `git remote -v`; userland: `common/ugit remote -v`). A fresh `git clone` of this hub + `./setup.sh` was checked to
 reproduce the workspace. (The standalone `hackios-xnu-userland/` clone next to the kernel checkout is no longer
 used: the userland's origin was it, now it is the fork.)
